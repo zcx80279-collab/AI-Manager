@@ -1,0 +1,6 @@
+{
+  "name": "AI 중앙통제실 V0.1",
+  "description": "다중 AI 서비스 통합 관리, 조직 및 직급 기반 업무 분배, 공식 연동 검증, 공용 작업 기록을 지원하는 중앙 통제 프로토타입",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
