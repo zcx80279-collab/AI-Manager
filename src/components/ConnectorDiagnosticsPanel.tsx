@@ -1,3 +1,5 @@
+import { useState } from 'react';
+import type { RuntimeBridge } from '../runtime/runtimeBridge.ts';
 import type { AIAgentConfig, RuntimeInfo } from '../types/controlCenter.ts';
 
 interface ConnectorDiagnosticsPanelProps {
@@ -5,6 +7,7 @@ interface ConnectorDiagnosticsPanelProps {
   runtimeInfo: RuntimeInfo | null;
   probing: boolean;
   onRefreshProbe: () => void;
+  runtimeBridge: RuntimeBridge;
 }
 
 export function ConnectorDiagnosticsPanel({
@@ -12,7 +15,23 @@ export function ConnectorDiagnosticsPanel({
   runtimeInfo,
   probing,
   onRefreshProbe,
+  runtimeBridge,
 }: ConnectorDiagnosticsPanelProps) {
+  const [authBusy, setAuthBusy] = useState(false);
+  const [authError, setAuthError] = useState<string | null>(null);
+  const changeGptSession = async (action: 'in' | 'out') => {
+    setAuthBusy(true);
+    setAuthError(null);
+    try {
+      if (action === 'in') await runtimeBridge.signInGpt();
+      else await runtimeBridge.signOutGpt();
+      onRefreshProbe();
+    } catch (error) {
+      setAuthError(error instanceof Error ? error.message : 'ChatGPT 인증 오류');
+    } finally {
+      setAuthBusy(false);
+    }
+  };
   return (
     <section className="border border-neutral-500 bg-white p-3">
       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-neutral-300 pb-2">
@@ -75,6 +94,14 @@ export function ConnectorDiagnosticsPanel({
                   {probe?.subscriptionSupportNote ?? '-'}
                 </div>
               </div>
+              {agent.id === 'gpt' && runtimeInfo?.runtimeKind === 'electron-desktop' && (
+                <div className="mt-2 flex flex-wrap gap-2">
+                  <button type="button" disabled={authBusy} onClick={() => void changeGptSession('in')} className="border border-neutral-700 bg-neutral-100 px-2.5 py-1 text-xs font-semibold hover:bg-neutral-200 disabled:text-neutral-400">ChatGPT 로그인 / 재로그인</button>
+                  <button type="button" disabled={authBusy || agent.connectionStatus !== '연결됨'} onClick={() => void changeGptSession('out')} className="border border-neutral-700 bg-neutral-100 px-2.5 py-1 text-xs font-semibold hover:bg-neutral-200 disabled:text-neutral-400">로그아웃</button>
+                  {probe?.quota.isExhausted && <button type="button" disabled={authBusy} onClick={() => { void runtimeBridge.resumeGptAfterLimit().then(onRefreshProbe).catch(error => setAuthError(error instanceof Error ? error.message : '재시도 준비 실패')); }} className="border border-neutral-700 bg-neutral-100 px-2.5 py-1 text-xs font-semibold hover:bg-neutral-200 disabled:text-neutral-400">사용량 확인 후 재시도</button>}
+                  {authError && <div className="w-full text-red-700">{authError}</div>}
+                </div>
+              )}
 
               {probe && probe.officialMethods.length > 0 && (
                 <div className="mt-2 border-t border-neutral-300 pt-1.5">

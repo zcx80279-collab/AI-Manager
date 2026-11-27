@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { app, BrowserWindow, ipcMain } from 'electron';
+import { app, BrowserWindow, ipcMain, safeStorage, shell } from 'electron';
+import { createChatGPT } from '../vendor/siwc-local/src/index.ts';
 import {
   executeAntigravityConnector,
   probeAntigravityConnector,
@@ -16,6 +17,11 @@ import {
 import {
   executeGptConnector,
   probeGptConnector,
+  setGptClient,
+  getGptSession,
+  signInGpt,
+  signOutGpt,
+  resumeGptAfterLimit,
 } from '../server/adapters/gptAdapter.ts';
 import type {
   AIServiceId,
@@ -31,11 +37,41 @@ const ALLOWED_SERVICES = new Set<AIServiceId>([
   'antigravity',
 ]);
 
+function initializeChatGPT() {
+  setGptClient(createChatGPT({
+    appName: 'AI-Manager',
+    appId: 'ai-manager',
+    redirectPort: 0,
+    sendHostId: true,
+    storageDir: path.join(app.getPath('userData'), 'chatgpt'),
+    credentialEncryption: {
+      id: 'electron-safe-storage-v1',
+      isAvailable: () => safeStorage.isEncryptionAvailable(),
+      encrypt: (value) => {
+        if (!safeStorage.isEncryptionAvailable()) throw new Error('OS 보안 저장소를 사용할 수 없습니다.');
+        return safeStorage.encryptString(value);
+      },
+      decrypt: (value) => {
+        if (!safeStorage.isEncryptionAvailable()) throw new Error('OS 보안 저장소를 사용할 수 없습니다.');
+        return safeStorage.decryptString(Buffer.from(value));
+      },
+    },
+    openBrowser: async (url) => {
+      if (new URL(url).origin !== 'https://auth.openai.com') throw new Error('인증 주소가 올바르지 않습니다.');
+      await shell.openExternal(url);
+    },
+  }), path.join(app.getPath('userData'), 'gpt-quota-state.json'));
+}
+
 function getDesktopStorePath(): string {
   return path.join(app.getPath('userData'), 'control-center-store.json');
 }
 
 function registerIpcHandlers() {
+  ipcMain.handle('control-center:gpt-session', getGptSession);
+  ipcMain.handle('control-center:gpt-sign-in', signInGpt);
+  ipcMain.handle('control-center:gpt-sign-out', signOutGpt);
+  ipcMain.handle('control-center:gpt-resume-after-limit', resumeGptAfterLimit);
   ipcMain.handle('control-center:get-runtime', (): RuntimeInfo => {
     return {
       runtimeKind: 'electron-desktop',
@@ -149,12 +185,14 @@ function createWindow() {
     width: 1320,
     height: 860,
     webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
+      preload: path.join(__dirname, 'preload.cjs'),
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
     },
   });
+  win.webContents.on('will-navigate', (event) => event.preventDefault());
+  win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
 
   const devUrl = process.env.ELECTRON_START_URL;
   if (devUrl) {
@@ -165,6 +203,7 @@ function createWindow() {
 }
 
 void app.whenReady().then(() => {
+  initializeChatGPT();
   registerIpcHandlers();
   createWindow();
 });
