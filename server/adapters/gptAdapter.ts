@@ -1,3 +1,5 @@
+import fs from 'node:fs';
+import path from 'node:path';
 import type { ChatGPTClient, SessionState } from '../../vendor/siwc-local/src/types.ts';
 import type { ConnectorProbeResult, ExecuteConnectorRequest, ExecuteConnectorResponse, QuotaInfo } from '../../src/types/controlCenter.ts';
 
@@ -5,9 +7,24 @@ let client: ChatGPTClient | null = null;
 let sessionCallCount = 0;
 let exhausted = false;
 let selectedModel: string | null = null;
+let quotaStatePath: string | null = null;
 const quota = (): QuotaInfo => ({ remainingQuotaLabel: '확인 불가', resetTimeLabel: '확인 불가', isExhausted: exhausted, isApproachingLimit: false, source: exhausted ? 'error_429' : 'not_exposed', sessionCallCount, lastUpdatedAt: null });
 
-export function setGptClient(value: ChatGPTClient): void { client = value; }
+export function setGptClient(value: ChatGPTClient, statePath: string): void {
+  client = value;
+  quotaStatePath = statePath;
+  try {
+    exhausted = JSON.parse(fs.readFileSync(statePath, 'utf8')).blocked === true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+  }
+}
+export function resumeGptAfterLimit(): void {
+  if (!quotaStatePath) throw new Error('GPT 한도 상태 저장소가 준비되지 않았습니다.');
+  fs.mkdirSync(path.dirname(quotaStatePath), { recursive: true });
+  fs.writeFileSync(quotaStatePath, JSON.stringify({ blocked: false }), 'utf8');
+  exhausted = false;
+}
 export async function getGptSession(): Promise<SessionState> { return client ? client.getSession() : { status: 'disconnected', sharing: false }; }
 export async function signInGpt(): Promise<SessionState> {
   if (!client) throw new Error('ChatGPT 로그인은 Windows 데스크톱 앱에서만 사용할 수 있습니다.');
@@ -68,7 +85,17 @@ export async function executeGptConnector(req: ExecuteConnectorRequest): Promise
   } catch (error: unknown) {
     const details = error as { code?: string; message?: string; status?: number };
     const hitLimit = details.code === 'subscription_sharing_usage_limit_exceeded';
-    if (hitLimit) exhausted = true;
+    if (hitLimit) {
+      exhausted = true;
+      if (quotaStatePath) {
+        try {
+          fs.mkdirSync(path.dirname(quotaStatePath), { recursive: true });
+          fs.writeFileSync(quotaStatePath, JSON.stringify({ blocked: true }), 'utf8');
+        } catch {
+          // Keep the current process blocked even if the disk is unavailable.
+        }
+      }
+    }
     return failure(hitLimit ? 'QUOTA_EXHAUSTED' : details.status === 429 ? 'RATE_LIMITED' : 'EXECUTION_FAILED', details.message ?? 'ChatGPT 요청 실패');
   }
 }

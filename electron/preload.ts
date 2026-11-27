@@ -15,6 +15,7 @@ const ALLOWED_CHANNELS = new Set([
   'control-center:gpt-session',
   'control-center:gpt-sign-in',
   'control-center:gpt-sign-out',
+  'control-center:gpt-resume-after-limit',
 ]);
 
 function safeInvoke<T>(channel: string, ...args: unknown[]): Promise<T> {
@@ -28,6 +29,7 @@ contextBridge.exposeInMainWorld('desktopBridge', {
   getGptSession: () => safeInvoke('control-center:gpt-session'),
   signInGpt: () => safeInvoke('control-center:gpt-sign-in'),
   signOutGpt: () => safeInvoke('control-center:gpt-sign-out'),
+  resumeGptAfterLimit: () => safeInvoke('control-center:gpt-resume-after-limit'),
   getRuntimeInfo: () => safeInvoke('control-center:get-runtime'),
   probeConnectors: () => safeInvoke('control-center:probe-connectors'),
   executeConnector: (request: ExecuteConnectorRequest) =>

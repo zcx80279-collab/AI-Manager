@@ -21,6 +21,7 @@ import {
   getGptSession,
   signInGpt,
   signOutGpt,
+  resumeGptAfterLimit,
 } from '../server/adapters/gptAdapter.ts';
 import type {
   AIServiceId,
@@ -59,7 +60,7 @@ function initializeChatGPT() {
       if (new URL(url).origin !== 'https://auth.openai.com') throw new Error('인증 주소가 올바르지 않습니다.');
       await shell.openExternal(url);
     },
-  }));
+  }), path.join(app.getPath('userData'), 'gpt-quota-state.json'));
 }
 
 function getDesktopStorePath(): string {
@@ -70,6 +71,7 @@ function registerIpcHandlers() {
   ipcMain.handle('control-center:gpt-session', getGptSession);
   ipcMain.handle('control-center:gpt-sign-in', signInGpt);
   ipcMain.handle('control-center:gpt-sign-out', signOutGpt);
+  ipcMain.handle('control-center:gpt-resume-after-limit', resumeGptAfterLimit);
   ipcMain.handle('control-center:get-runtime', (): RuntimeInfo => {
     return {
       runtimeKind: 'electron-desktop',

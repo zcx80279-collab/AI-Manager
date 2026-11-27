@@ -98,6 +98,7 @@ export function ConnectorDiagnosticsPanel({
                 <div className="mt-2 flex flex-wrap gap-2">
                   <button type="button" disabled={authBusy} onClick={() => void changeGptSession('in')} className="border border-neutral-700 bg-neutral-100 px-2.5 py-1 text-xs font-semibold hover:bg-neutral-200 disabled:text-neutral-400">ChatGPT 로그인 / 재로그인</button>
                   <button type="button" disabled={authBusy || agent.connectionStatus !== '연결됨'} onClick={() => void changeGptSession('out')} className="border border-neutral-700 bg-neutral-100 px-2.5 py-1 text-xs font-semibold hover:bg-neutral-200 disabled:text-neutral-400">로그아웃</button>
+                  {probe?.quota.isExhausted && <button type="button" disabled={authBusy} onClick={() => { void runtimeBridge.resumeGptAfterLimit().then(onRefreshProbe).catch(error => setAuthError(error instanceof Error ? error.message : '재시도 준비 실패')); }} className="border border-neutral-700 bg-neutral-100 px-2.5 py-1 text-xs font-semibold hover:bg-neutral-200 disabled:text-neutral-400">사용량 확인 후 재시도</button>}
                   {authError && <div className="w-full text-red-700">{authError}</div>}
                 </div>
               )}
