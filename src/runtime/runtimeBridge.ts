@@ -8,6 +8,9 @@ import type {
 } from '../types/controlCenter.ts';
 
 export interface DesktopBridgeAPI {
+  getGptSession: () => Promise<{ status: string; sharing: boolean; identity?: { email?: string } }>;
+  signInGpt: () => Promise<{ status: string; sharing: boolean; identity?: { email?: string } }>;
+  signOutGpt: () => Promise<{ status: string; sharing: boolean; identity?: { email?: string } }>;
   getRuntimeInfo: () => Promise<RuntimeInfo>;
   probeConnectors: () => Promise<{
     connectors: Record<AIServiceId, ConnectorProbeResult>;
@@ -28,6 +31,9 @@ declare global {
 }
 
 export interface RuntimeBridge {
+  getGptSession: DesktopBridgeAPI['getGptSession'];
+  signInGpt: DesktopBridgeAPI['signInGpt'];
+  signOutGpt: DesktopBridgeAPI['signOutGpt'];
   isDesktop: () => boolean;
   getRuntimeInfo: () => Promise<RuntimeInfo>;
   probeConnectors: () => Promise<{
@@ -44,6 +50,9 @@ export interface RuntimeBridge {
 }
 
 export const defaultRuntimeBridge: RuntimeBridge = {
+  getGptSession: () => window.desktopBridge?.getGptSession() ?? Promise.resolve({ status: 'disconnected', sharing: false }),
+  signInGpt: () => window.desktopBridge?.signInGpt() ?? Promise.reject(new Error('ChatGPT 로그인은 데스크톱 앱에서만 지원됩니다.')),
+  signOutGpt: () => window.desktopBridge?.signOutGpt() ?? Promise.reject(new Error('ChatGPT 로그아웃은 데스크톱 앱에서만 지원됩니다.')),
   isDesktop() {
     return typeof window !== 'undefined' && Boolean(window.desktopBridge);
   },

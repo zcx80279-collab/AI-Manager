@@ -1,190 +1,74 @@
-import type {
-  ConnectorProbeResult,
-  ExecuteConnectorRequest,
-  ExecuteConnectorResponse,
-  QuotaInfo,
-} from '../../src/types/controlCenter.ts';
+import type { ChatGPTClient, SessionState } from '../../vendor/siwc-local/src/types.ts';
+import type { ConnectorProbeResult, ExecuteConnectorRequest, ExecuteConnectorResponse, QuotaInfo } from '../../src/types/controlCenter.ts';
 
+let client: ChatGPTClient | null = null;
 let sessionCallCount = 0;
-let lastQuota: QuotaInfo = {
-  remainingQuotaLabel: '확인 불가 (실제 API 응답 헤더 수신 전)',
-  resetTimeLabel: '확인 불가',
-  isExhausted: false,
-  isApproachingLimit: false,
-  source: 'not_exposed',
-  sessionCallCount: 0,
-  lastUpdatedAt: null,
-};
+let exhausted = false;
+let selectedModel: string | null = null;
+const quota = (): QuotaInfo => ({ remainingQuotaLabel: '확인 불가', resetTimeLabel: '확인 불가', isExhausted: exhausted, isApproachingLimit: false, source: exhausted ? 'error_429' : 'not_exposed', sessionCallCount, lastUpdatedAt: null });
+
+export function setGptClient(value: ChatGPTClient): void { client = value; }
+export async function getGptSession(): Promise<SessionState> { return client ? client.getSession() : { status: 'disconnected', sharing: false }; }
+export async function signInGpt(): Promise<SessionState> {
+  if (!client) throw new Error('ChatGPT 로그인은 Windows 데스크톱 앱에서만 사용할 수 있습니다.');
+  const session = await client.signIn();
+  selectedModel = null;
+  return session;
+}
+export async function signOutGpt(): Promise<SessionState> {
+  if (!client) throw new Error('ChatGPT 연결이 초기화되지 않았습니다.');
+  await client.disconnect();
+  selectedModel = null;
+  return client.getSession();
+}
 
 export async function probeGptConnector(): Promise<ConnectorProbeResult> {
-  const hasOpenAiKey = Boolean(
-    process.env.OPENAI_API_KEY && process.env.OPENAI_API_KEY.trim().length > 0
-  );
-  const now = new Date().toISOString();
-
+  let session: SessionState;
+  try { session = await getGptSession(); }
+  catch { session = { status: 'reauth_required', sharing: false }; }
+  let authError: string | null = null;
+  if (session.status === 'connected' && session.sharing && client) {
+    try {
+      const models = await client.listModels();
+      selectedModel = models[0]?.slug ?? null;
+      if (!selectedModel) authError = '사용 가능한 ChatGPT 모델이 없습니다.';
+    } catch (error) {
+      authError = error instanceof Error ? error.message : 'ChatGPT 인증 확인 실패';
+    }
+  }
+  const connected = session.status === 'connected' && session.sharing && !authError;
   return {
-    serviceId: 'gpt',
-    connectionStatus: hasOpenAiKey ? '연결됨' : '미연결',
-    activeChannel: hasOpenAiKey ? 'OpenAI Official REST API (OPENAI_API_KEY)' : null,
-    officialMethods: [
-      {
-        method: 'OpenAI Official REST API (/v1/chat/completions)',
-        type: 'REST_API',
-        authMode: 'OPENAI_API_KEY (종량제 유료 API)',
-        supportedInCurrentRuntime: true,
-        availableNow: hasOpenAiKey,
-        note: hasOpenAiKey
-          ? '서버 환경변수 OPENAI_API_KEY 감지됨 (실제 호출 시 사용자 승인 필요)'
-          : 'OPENAI_API_KEY 환경변수가 설정되지 않음',
-      },
-      {
-        method: 'ChatGPT Plus/Pro 웹 구독 세션',
-        type: 'REST_API',
-        authMode: '개인 웹 로그인 세션',
-        supportedInCurrentRuntime: false,
-        availableNow: false,
-        note: '공식 외부 제어 API 미제공 (비공식 세션 탈취/우회 금지 원칙에 따라 미지원)',
-      },
-    ],
-    subscriptionSupportNote:
-      'ChatGPT 웹 구독(Plus/Pro)은 브라우저 세션 기반 외부 제어용 공식 API를 제공하지 않습니다. 공식 구독 인증 연계는 Codex CLI의 "Sign in with ChatGPT" 경로에서만 지원됩니다.',
-    requiresPaidApproval: true,
-    reason: hasOpenAiKey
-      ? 'OPENAI_API_KEY가 서버 환경변수에 설정되어 공식 REST API 연결 가능'
-      : 'OPENAI_API_KEY 미설정 — 비공식 ChatGPT 웹 세션 우회 불가로 미연결 상태 유지',
-    quota: {
-      ...lastQuota,
-      sessionCallCount,
-    },
-    probedAt: now,
+    serviceId: 'gpt', connectionStatus: connected ? '연결됨' : authError || session.status === 'reauth_required' ? '오류' : '미연결',
+    activeChannel: connected ? 'Sign in with ChatGPT (Responses API)' : null,
+    officialMethods: [{ method: 'Sign in with ChatGPT / Responses API', type: 'SDK', authMode: 'ChatGPT 계정 OAuth 및 사용량 공유 동의', supportedInCurrentRuntime: Boolean(client), availableNow: connected, note: client ? `인증: ${session.status}, 사용량 공유: ${session.sharing ? '허용' : '미허용'}` : '데스크톱 앱에서 로그인 가능' }],
+    subscriptionSupportNote: '적격 Plus/Pro 계정은 별도 API 키 없이 구독 사용량으로 지원 모델에 요청할 수 있습니다. 잔여량은 확인할 수 없습니다.',
+    requiresPaidApproval: false,
+    reason: authError ?? (exhausted ? 'ChatGPT 사용량 한도 도달: 추가 호출 중단' : session.status === 'connected' && !session.sharing ? '로그인됨. ChatGPT 사용량 공유 권한이 필요합니다.' : connected ? `ChatGPT 계정 인증됨${session.identity?.email ? ` (${session.identity.email})` : ''}` : session.status === 'reauth_required' ? '인증 갱신 실패: 재로그인 필요' : 'ChatGPT 계정 로그인 필요'),
+    quota: quota(), probedAt: new Date().toISOString(),
   };
 }
 
-export async function executeGptConnector(
-  req: ExecuteConnectorRequest
-): Promise<ExecuteConnectorResponse> {
-  const now = new Date().toISOString();
-  if (!req.userApprovedExecution) {
-    return {
-      ok: false,
-      serviceId: 'gpt',
-      channelUsed: null,
-      text: '',
-      errorCode: 'APPROVAL_REQUIRED',
-      errorMessage: '유료 OpenAI API 실행 전 사용자 승인이 필요합니다.',
-      executedAt: now,
-    };
-  }
-
-  const apiKey = process.env.OPENAI_API_KEY?.trim();
-  if (!apiKey) {
-    return {
-      ok: false,
-      serviceId: 'gpt',
-      channelUsed: null,
-      text: '',
-      errorCode: 'NOT_CONNECTED',
-      errorMessage: 'OPENAI_API_KEY가 설정되어 있지 않아 실제 GPT API 호출을 수행할 수 없습니다.',
-      executedAt: now,
-    };
-  }
-
+export async function executeGptConnector(req: ExecuteConnectorRequest): Promise<ExecuteConnectorResponse> {
+  const failure = (code: NonNullable<ExecuteConnectorResponse['errorCode']>, message: string): ExecuteConnectorResponse => ({ ok: false, serviceId: 'gpt', channelUsed: null, text: '', errorCode: code, errorMessage: message, quotaUpdate: quota(), executedAt: new Date().toISOString() });
+  if (!req.userApprovedExecution) return failure('APPROVAL_REQUIRED', 'GPT 실행 전 사용자 승인이 필요합니다.');
+  if (!client) return failure('NOT_CONNECTED', 'ChatGPT 데스크톱 연결이 초기화되지 않았습니다.');
+  if (exhausted) return failure('QUOTA_EXHAUSTED', 'ChatGPT 사용량 한도에 도달해 호출을 중단했습니다.');
   try {
-    const messages: Array<{ role: 'system' | 'user'; content: string }> = [];
-    if (req.systemInstruction) {
-      messages.push({ role: 'system', content: req.systemInstruction });
+    const session = await client.getSession();
+    if (session.status !== 'connected' || !session.sharing) return failure('NOT_CONNECTED', 'ChatGPT 로그인과 사용량 공유 동의가 필요합니다.');
+    if (!selectedModel) {
+      const models = await client.listModels();
+      selectedModel = models[0]?.slug ?? null;
     }
-    const contextHeader =
-      req.contextMessages && req.contextMessages.length > 0
-        ? `[이전 AI 전달 기록]\n${req.contextMessages
-            .map((m) => `- ${m.from}: ${m.content}`)
-            .join('\n')}\n\n`
-        : '';
-    messages.push({ role: 'user', content: `${contextHeader}${req.prompt}` });
-
-    const response = await fetch('https://api.openai.com/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify({
-        model: 'gpt-4o-mini',
-        messages,
-      }),
-    });
-
-    const remReq = response.headers.get('x-ratelimit-remaining-requests');
-    const remTok = response.headers.get('x-ratelimit-remaining-tokens');
-    const resetReq = response.headers.get('x-ratelimit-reset-requests');
-    const resetTok = response.headers.get('x-ratelimit-reset-tokens');
-
-    const hasHeaders = Boolean(remReq || remTok);
-    const remainingNum = remReq ? Number(remReq) : null;
-    const isApproaching = remainingNum !== null && !Number.isNaN(remainingNum) && remainingNum <= 3;
-
-    if (!response.ok) {
-      const errorBody = await response.text();
-      const isQuota = response.status === 429 && errorBody.includes('insufficient_quota');
-      const isRate = response.status === 429;
-      if (isQuota) {
-        lastQuota = {
-          remainingQuotaLabel: '0 (insufficient_quota)',
-          resetTimeLabel: resetReq ?? resetTok ?? '확인 불가',
-          isExhausted: true,
-          isApproachingLimit: true,
-          source: 'error_429',
-          sessionCallCount,
-          lastUpdatedAt: new Date().toISOString(),
-        };
-      }
-      return {
-        ok: false,
-        serviceId: 'gpt',
-        channelUsed: 'OpenAI REST API (gpt-4o-mini)',
-        text: '',
-        quotaUpdate: isQuota ? lastQuota : undefined,
-        errorCode: isQuota ? 'QUOTA_EXHAUSTED' : isRate ? 'RATE_LIMITED' : 'EXECUTION_FAILED',
-        errorMessage: `OpenAI HTTP ${response.status}: ${errorBody.slice(0, 300)}`,
-        executedAt: new Date().toISOString(),
-      };
-    }
-
-    const data = (await response.json()) as {
-      choices?: Array<{ message?: { content?: string } }>;
-    };
-    sessionCallCount += 1;
-    const executedAt = new Date().toISOString();
-
-    lastQuota = {
-      remainingQuotaLabel: hasHeaders
-        ? `요청 ${remReq ?? '?'} / 토큰 ${remTok ?? '?'}`
-        : '확인 불가 (응답 헤더 미포함)',
-      resetTimeLabel: resetReq || resetTok ? `요청 ${resetReq ?? '-'} / 토큰 ${resetTok ?? '-'}` : '확인 불가',
-      isExhausted: false,
-      isApproachingLimit: isApproaching,
-      source: hasHeaders ? 'http_headers' : 'not_exposed',
-      sessionCallCount,
-      lastUpdatedAt: executedAt,
-    };
-
-    return {
-      ok: true,
-      serviceId: 'gpt',
-      channelUsed: 'OpenAI REST API (gpt-4o-mini)',
-      text: data.choices?.[0]?.message?.content ?? '',
-      quotaUpdate: lastQuota,
-      executedAt,
-    };
-  } catch (err: unknown) {
-    return {
-      ok: false,
-      serviceId: 'gpt',
-      channelUsed: 'OpenAI REST API',
-      text: '',
-      errorCode: 'EXECUTION_FAILED',
-      errorMessage: err instanceof Error ? err.message : String(err),
-      executedAt: new Date().toISOString(),
-    };
+    if (!selectedModel) return failure('EXECUTION_FAILED', '이 계정에서 사용할 수 있는 모델을 찾지 못했습니다.');
+    const context = req.contextMessages?.length ? `[이전 AI 전달 기록]\n${req.contextMessages.map(m => `- ${m.from}: ${m.content}`).join('\n')}\n\n` : '';
+    const result = await client.streamResponse({ model: selectedModel, input: `${context}${req.prompt}`, instructions: req.systemInstruction });
+    sessionCallCount++;
+    return { ok: true, serviceId: 'gpt', channelUsed: `ChatGPT plan / ${selectedModel}`, text: result.text, quotaUpdate: quota(), executedAt: new Date().toISOString() };
+  } catch (error: unknown) {
+    const details = error as { code?: string; message?: string; status?: number };
+    const hitLimit = details.code === 'subscription_sharing_usage_limit_exceeded';
+    if (hitLimit) exhausted = true;
+    return failure(hitLimit ? 'QUOTA_EXHAUSTED' : details.status === 429 ? 'RATE_LIMITED' : 'EXECUTION_FAILED', details.message ?? 'ChatGPT 요청 실패');
   }
 }

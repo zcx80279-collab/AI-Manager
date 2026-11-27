@@ -286,6 +286,7 @@ export function CyberRabbitControlModule({
         />
 
         <ConnectorDiagnosticsPanel
+          runtimeBridge={runtimeBridge}
           agents={store.agents}
           runtimeInfo={runtimeInfo}
           probing={probing}
