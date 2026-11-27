@@ -29,5 +29,10 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v')
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REF_NAME: ${{ github.ref_name }}
         shell: pwsh
-        run: gh release create ${{ github.ref_name }} release/*.exe --title ${{ github.ref_name }} --generate-notes
+        run: |
+          $tag = $env:GH_REF_NAME
+          $extra = @()
+          if ($tag.Contains('-')) { $extra += '--prerelease' }
+          gh release create $tag release/*.exe --title $tag --generate-notes @extra
