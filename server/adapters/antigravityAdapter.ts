@@ -8,6 +8,7 @@ import type {
   ExecuteConnectorRequest,
   ExecuteConnectorResponse,
 } from '../../src/types/controlCenter.ts';
+import { safeServerLog, sanitizeUserError } from '../security/errorSanitizer.ts';
 
 const execFileAsync = promisify(execFile);
 
@@ -148,6 +149,7 @@ export async function executeAntigravityConnector(
       executedAt: new Date().toISOString(),
     };
   } catch (err: unknown) {
+    safeServerLog('antigravityAdapter/execute', err);
     const msg = err instanceof Error ? err.message : String(err);
     const isQuota =
       msg.includes('429') ||
@@ -159,7 +161,9 @@ export async function executeAntigravityConnector(
       channelUsed: 'Google Antigravity CLI (agy -p)',
       text: '',
       errorCode: isQuota ? 'QUOTA_EXHAUSTED' : 'EXECUTION_FAILED',
-      errorMessage: msg,
+      errorMessage: isQuota
+        ? sanitizeUserError('Antigravity CLI 사용 한도가 소진되었습니다.')
+        : sanitizeUserError('Antigravity CLI 실행 중 오류가 발생했습니다.'),
       executedAt: new Date().toISOString(),
     };
   }

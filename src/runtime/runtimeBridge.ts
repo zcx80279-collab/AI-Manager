@@ -43,6 +43,49 @@ export interface RuntimeBridge {
   clearStore: () => Promise<void>;
 }
 
+let cachedCsrfToken: string | null = null;
+
+async function ensureCsrfToken(forceRefresh = false): Promise<string> {
+  if (cachedCsrfToken && !forceRefresh) {
+    return cachedCsrfToken;
+  }
+  const res = await fetch('/api/session', {
+    method: 'GET',
+    credentials: 'same-origin',
+  });
+  if (!res.ok) {
+    throw new Error(`세션 인증 초기화 실패 (${res.status})`);
+  }
+  const data = (await res.json()) as { csrfToken?: string };
+  if (!data.csrfToken) {
+    throw new Error('유효한 세션 토큰을 수신하지 못했습니다.');
+  }
+  cachedCsrfToken = data.csrfToken;
+  return cachedCsrfToken;
+}
+
+async function authenticatedApiFetch(
+  url: string,
+  init: RequestInit = {},
+  retryOnUnauthorized = true
+): Promise<Response> {
+  const token = await ensureCsrfToken();
+  const headers = new Headers(init.headers);
+  headers.set('X-AI-Manager-CSRF', token);
+
+  const res = await fetch(url, {
+    ...init,
+    headers,
+    credentials: 'same-origin',
+  });
+
+  if (res.status === 401 && retryOnUnauthorized) {
+    await ensureCsrfToken(true);
+    return authenticatedApiFetch(url, init, false);
+  }
+  return res;
+}
+
 export const defaultRuntimeBridge: RuntimeBridge = {
   isDesktop() {
     return typeof window !== 'undefined' && Boolean(window.desktopBridge);
@@ -52,7 +95,7 @@ export const defaultRuntimeBridge: RuntimeBridge = {
     if (typeof window !== 'undefined' && window.desktopBridge) {
       return window.desktopBridge.getRuntimeInfo();
     }
-    const res = await fetch('/api/runtime');
+    const res = await authenticatedApiFetch('/api/runtime');
     if (!res.ok) {
       throw new Error(`런타임 정보 조회 실패 (${res.status})`);
     }
@@ -63,7 +106,7 @@ export const defaultRuntimeBridge: RuntimeBridge = {
     if (typeof window !== 'undefined' && window.desktopBridge) {
       return window.desktopBridge.probeConnectors();
     }
-    const res = await fetch('/api/connectors/status');
+    const res = await authenticatedApiFetch('/api/connectors/status');
     if (!res.ok) {
       throw new Error(`커넥터 상태 점검 실패 (${res.status})`);
     }
@@ -89,21 +132,20 @@ export const defaultRuntimeBridge: RuntimeBridge = {
       return window.desktopBridge.executeConnector(request);
     }
 
-    const res = await fetch(`/api/connectors/${request.serviceId}/execute`, {
+    const res = await authenticatedApiFetch(`/api/connectors/${request.serviceId}/execute`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(request),
       signal,
     });
     if (!res.ok) {
-      const text = await res.text();
       return {
         ok: false,
         serviceId: request.serviceId,
         channelUsed: null,
         text: '',
         errorCode: 'EXECUTION_FAILED',
-        errorMessage: `HTTP ${res.status}: ${text}`,
+        errorMessage: `요청 처리에 실패했습니다. (HTTP ${res.status})`,
         executedAt: new Date().toISOString(),
       };
     }
@@ -115,7 +157,7 @@ export const defaultRuntimeBridge: RuntimeBridge = {
       const result = await window.desktopBridge.loadStore();
       return result.store;
     }
-    const res = await fetch('/api/storage');
+    const res = await authenticatedApiFetch('/api/storage');
     if (!res.ok) {
       throw new Error(`공용 저장소 로드 실패 (${res.status})`);
     }
@@ -128,7 +170,7 @@ export const defaultRuntimeBridge: RuntimeBridge = {
       const result = await window.desktopBridge.saveStore(store);
       return result.store;
     }
-    const res = await fetch('/api/storage', {
+    const res = await authenticatedApiFetch('/api/storage', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ store }),
@@ -145,7 +187,7 @@ export const defaultRuntimeBridge: RuntimeBridge = {
       await window.desktopBridge.clearStore();
       return;
     }
-    const res = await fetch('/api/storage', { method: 'DELETE' });
+    const res = await authenticatedApiFetch('/api/storage', { method: 'DELETE' });
     if (!res.ok) {
       throw new Error(`공용 저장소 초기화 실패 (${res.status})`);
     }

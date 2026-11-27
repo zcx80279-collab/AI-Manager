@@ -4,6 +4,7 @@ import type {
   ExecuteConnectorResponse,
   QuotaInfo,
 } from '../../src/types/controlCenter.ts';
+import { safeServerLog, sanitizeUserError } from '../security/errorSanitizer.ts';
 
 let sessionCallCount = 0;
 let lastQuota: QuotaInfo = {
@@ -138,6 +139,7 @@ export async function executeGptConnector(
           lastUpdatedAt: new Date().toISOString(),
         };
       }
+      safeServerLog('gptAdapter/http', `HTTP ${response.status}: ${errorBody.slice(0, 300)}`);
       return {
         ok: false,
         serviceId: 'gpt',
@@ -145,7 +147,11 @@ export async function executeGptConnector(
         text: '',
         quotaUpdate: isQuota ? lastQuota : undefined,
         errorCode: isQuota ? 'QUOTA_EXHAUSTED' : isRate ? 'RATE_LIMITED' : 'EXECUTION_FAILED',
-        errorMessage: `OpenAI HTTP ${response.status}: ${errorBody.slice(0, 300)}`,
+        errorMessage: isQuota
+          ? sanitizeUserError('OpenAI API 사용 한도가 소진되었습니다.', response.status)
+          : isRate
+            ? sanitizeUserError('OpenAI API 요청 한도를 초과했습니다.', response.status)
+            : sanitizeUserError('OpenAI API 요청 처리에 실패했습니다.', response.status),
         executedAt: new Date().toISOString(),
       };
     }
@@ -177,13 +183,14 @@ export async function executeGptConnector(
       executedAt,
     };
   } catch (err: unknown) {
+    safeServerLog('gptAdapter/execute', err);
     return {
       ok: false,
       serviceId: 'gpt',
       channelUsed: 'OpenAI REST API',
       text: '',
       errorCode: 'EXECUTION_FAILED',
-      errorMessage: err instanceof Error ? err.message : String(err),
+      errorMessage: sanitizeUserError('OpenAI API 연결 중 오류가 발생했습니다.'),
       executedAt: new Date().toISOString(),
     };
   }

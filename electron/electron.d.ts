@@ -13,8 +13,19 @@ declare module 'electron' {
     getVersion: () => string;
   };
 
+  export interface WebContents {
+    setWindowOpenHandler: (
+      handler: (details: { url: string }) => { action: 'allow' | 'deny' }
+    ) => void;
+    on: (
+      event: 'will-navigate',
+      listener: (event: { preventDefault: () => void }, url: string) => void
+    ) => void;
+  }
+
   export class BrowserWindow {
     constructor(options: Record<string, unknown>);
+    webContents: WebContents;
     loadURL: (url: string) => Promise<void>;
     loadFile: (filePath: string) => Promise<void>;
     static getAllWindows: () => BrowserWindow[];

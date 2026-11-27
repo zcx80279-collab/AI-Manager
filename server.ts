@@ -20,29 +20,39 @@ import {
   probeGptConnector,
 } from './server/adapters/gptAdapter.ts';
 import {
+  safeServerLog,
+  sanitizeUserError,
+} from './server/security/errorSanitizer.ts';
+import {
+  createNetworkSecurityGuard,
+  getDefaultNetworkSecurityConfig,
+} from './server/security/networkSecurity.ts';
+import {
+  ALLOWED_SERVICES,
+  validateExecuteConnectorRequest,
+  validateSharedControlStore,
+} from './server/security/validators.ts';
+import {
   clearLocalStore,
   readLocalStore,
   writeLocalStore,
 } from './server/storage/localFileStore.ts';
 import type {
   AIServiceId,
-  ExecuteConnectorRequest,
   RuntimeInfo,
-  SharedControlStore,
 } from './src/types/controlCenter.ts';
-
-const ALLOWED_SERVICES = new Set<AIServiceId>([
-  'gpt',
-  'gemini',
-  'codex',
-  'antigravity',
-]);
 
 async function startServer() {
   const app = express();
   const port = Number(process.env.PORT ?? 3000);
+  const netConfig = getDefaultNetworkSecurityConfig(port);
+  const securityGuard = createNetworkSecurityGuard(netConfig);
 
+  app.disable('x-powered-by');
   app.use(express.json({ limit: '2mb' }));
+
+  app.get('/api/session', securityGuard.issueSessionHandler);
+  app.use('/api', securityGuard.requireAuthenticatedApi);
 
   app.get('/api/runtime', (_req, res) => {
     const info: RuntimeInfo = {
@@ -73,8 +83,10 @@ async function startServer() {
         probedAt: new Date().toISOString(),
       });
     } catch (err: unknown) {
+      safeServerLog('connectors/status', err);
       res.status(500).json({
-        error: err instanceof Error ? err.message : '커넥터 상태 점검 실패',
+        errorCode: 'PROBE_FAILED',
+        error: sanitizeUserError('커넥터 상태 점검에 실패했습니다.'),
       });
     }
   });
@@ -82,62 +94,48 @@ async function startServer() {
   app.post('/api/connectors/:id/execute', async (req, res) => {
     const serviceId = req.params.id as AIServiceId;
     if (!ALLOWED_SERVICES.has(serviceId)) {
-      res.status(400).json({ error: '허용되지 않은 AI 서비스 ID입니다.' });
+      res.status(400).json({
+        errorCode: 'INVALID_SERVICE',
+        error: '허용되지 않은 AI 서비스 ID입니다.',
+      });
       return;
     }
 
-    const body = req.body as Partial<ExecuteConnectorRequest> | undefined;
-    if (!body || typeof body.prompt !== 'string' || body.prompt.trim().length === 0) {
-      res.status(400).json({ error: '유효한 명령(prompt)이 필요합니다.' });
+    const validated = validateExecuteConnectorRequest(req.body, serviceId);
+    if (!validated.ok) {
+      res.status(400).json({
+        errorCode: 'INVALID_REQUEST',
+        error: validated.errorMessage,
+      });
       return;
     }
-
-    if (body.prompt.length > 20000) {
-      res.status(400).json({ error: '명령 길이가 허용 한도(20,000자)를 초과했습니다.' });
-      return;
-    }
-
-    const payload: ExecuteConnectorRequest = {
-      serviceId,
-      prompt: body.prompt,
-      systemInstruction:
-        typeof body.systemInstruction === 'string' ? body.systemInstruction : undefined,
-      userApprovedExecution: body.userApprovedExecution === true,
-      contextMessages: Array.isArray(body.contextMessages)
-        ? body.contextMessages
-            .filter(
-              (m): m is { from: string; content: string } =>
-                Boolean(m) && typeof m.from === 'string' && typeof m.content === 'string'
-            )
-            .slice(-12)
-        : undefined,
-    };
 
     try {
       let result;
       switch (serviceId) {
         case 'gpt':
-          result = await executeGptConnector(payload);
+          result = await executeGptConnector(validated.payload);
           break;
         case 'gemini':
-          result = await executeGeminiConnector(payload);
+          result = await executeGeminiConnector(validated.payload);
           break;
         case 'codex':
-          result = await executeCodexConnector(payload);
+          result = await executeCodexConnector(validated.payload);
           break;
         case 'antigravity':
-          result = await executeAntigravityConnector(payload);
+          result = await executeAntigravityConnector(validated.payload);
           break;
       }
       res.json(result);
     } catch (err: unknown) {
+      safeServerLog(`connectors/${serviceId}/execute`, err);
       res.status(500).json({
         ok: false,
         serviceId,
         channelUsed: null,
         text: '',
         errorCode: 'EXECUTION_FAILED',
-        errorMessage: err instanceof Error ? err.message : '알 수 없는 서버 실행 오류',
+        errorMessage: sanitizeUserError('서버 실행 중 오류가 발생했습니다.'),
         executedAt: new Date().toISOString(),
       });
     }
@@ -148,33 +146,33 @@ async function startServer() {
       const store = await readLocalStore();
       res.json({ store });
     } catch (err: unknown) {
+      safeServerLog('storage/read', err);
       res.status(500).json({
-        error: err instanceof Error ? err.message : '공용 저장소 읽기 실패',
+        errorCode: 'STORAGE_READ_FAILED',
+        error: sanitizeUserError('공용 저장소 읽기에 실패했습니다.'),
       });
     }
   });
 
   app.post('/api/storage', async (req, res) => {
-    const body = req.body as { store?: SharedControlStore } | undefined;
-    const candidate = body?.store;
-    if (
-      !candidate ||
-      typeof candidate !== 'object' ||
-      !Array.isArray(candidate.agents) ||
-      !Array.isArray(candidate.commands) ||
-      !Array.isArray(candidate.tasks) ||
-      !Array.isArray(candidate.messages)
-    ) {
-      res.status(400).json({ error: '공용 저장소 데이터 구조가 올바르지 않습니다.' });
+    const body = req.body as { store?: unknown } | undefined;
+    const validated = validateSharedControlStore(body?.store);
+    if (!validated.ok) {
+      res.status(400).json({
+        errorCode: 'INVALID_STORE',
+        error: validated.errorMessage,
+      });
       return;
     }
 
     try {
-      const saved = await writeLocalStore(candidate);
+      const saved = await writeLocalStore(validated.store);
       res.json({ store: saved });
     } catch (err: unknown) {
+      safeServerLog('storage/write', err);
       res.status(500).json({
-        error: err instanceof Error ? err.message : '공용 저장소 저장 실패',
+        errorCode: 'STORAGE_WRITE_FAILED',
+        error: sanitizeUserError('공용 저장소 저장에 실패했습니다.'),
       });
     }
   });
@@ -184,8 +182,10 @@ async function startServer() {
       await clearLocalStore();
       res.json({ ok: true });
     } catch (err: unknown) {
+      safeServerLog('storage/clear', err);
       res.status(500).json({
-        error: err instanceof Error ? err.message : '공용 저장소 초기화 실패',
+        errorCode: 'STORAGE_CLEAR_FAILED',
+        error: sanitizeUserError('공용 저장소 초기화에 실패했습니다.'),
       });
     }
   });
@@ -206,8 +206,10 @@ async function startServer() {
     }
   }
 
-  app.listen(port, '0.0.0.0', () => {
-    console.log(`[AI-Control-Center] Server listening on http://0.0.0.0:${port}`);
+  app.listen(netConfig.port, netConfig.bindHost, () => {
+    console.log(
+      `[AI-Control-Center] Server listening on http://${netConfig.bindHost}:${netConfig.port}`
+    );
   });
 }
 

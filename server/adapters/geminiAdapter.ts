@@ -6,6 +6,7 @@ import type {
   ExecuteConnectorRequest,
   ExecuteConnectorResponse,
 } from '../../src/types/controlCenter.ts';
+import { safeServerLog, sanitizeUserError } from '../security/errorSanitizer.ts';
 
 const execFileAsync = promisify(execFile);
 
@@ -164,6 +165,7 @@ export async function executeGeminiConnector(
       executedAt: lastUpdatedAt,
     };
   } catch (err: unknown) {
+    safeServerLog('geminiAdapter/execute', err);
     const msg = err instanceof Error ? err.message : String(err);
     const isQuota =
       msg.includes('RESOURCE_EXHAUSTED') ||
@@ -191,7 +193,9 @@ export async function executeGeminiConnector(
           }
         : undefined,
       errorCode: isQuota ? 'QUOTA_EXHAUSTED' : 'EXECUTION_FAILED',
-      errorMessage: msg,
+      errorMessage: isQuota
+        ? sanitizeUserError('Gemini API 사용 한도가 소진되었습니다.')
+        : sanitizeUserError('Gemini API 실행 중 오류가 발생했습니다.'),
       executedAt: new Date().toISOString(),
     };
   }
